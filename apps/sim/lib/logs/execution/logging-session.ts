@@ -309,11 +309,13 @@ export class LoggingSession {
 
   private async projectRawTraceSpans(
     traceSpans: TraceSpan[],
-    registry = this.resolvedSecretTraceRegistry
+    registry = this.resolvedSecretTraceRegistry,
+    phase?: 'live'
   ): Promise<TraceSpan[]> {
     return projectTraceSpansForSecrets(traceSpans, {
       registry,
       store: this.getSecretProjectionStore(),
+      phase,
     })
   }
 
@@ -365,7 +367,8 @@ export class LoggingSession {
             output: envelope,
           },
         ],
-        registry
+        registry,
+        'live'
       )
       const projected = this.readProjectedDisplayContent(projectedSpan?.output)
       return this.shouldClearLiveDisplay(registry)
@@ -426,7 +429,8 @@ export class LoggingSession {
               ...(log.childTraceSpans ? { children: log.childTraceSpans } : {}),
             },
           ],
-          registry
+          registry,
+          'live'
         )
         const display = this.readProjectedDisplayContent(projectedLog?.output)
         displayLogs.push({
@@ -873,7 +877,7 @@ export class LoggingSession {
       const deleted = skipLogCreation ? null : await this.findDeletedScope(error, workspaceId)
       if (deleted) throw deleted
       if (this.requestId) {
-        logger.error(`[${this.requestId}] Failed to start logging:`, error)
+        logger.error('Failed to start logging:', error, { requestId: this.requestId })
       }
       throw error
     }
@@ -1130,9 +1134,9 @@ export class LoggingSession {
       }
 
       if (this.requestId) {
-        logger.debug(
-          `[${this.requestId}] Completed error logging for execution ${this.executionId}`
-        )
+        logger.debug(`Completed error logging for execution ${this.executionId}`, {
+          requestId: this.requestId,
+        })
       }
     } catch (enhancedError) {
       this.completing = false
@@ -1212,9 +1216,9 @@ export class LoggingSession {
       }
 
       if (this.requestId) {
-        logger.debug(
-          `[${this.requestId}] Completed cancelled logging for execution ${this.executionId}`
-        )
+        logger.debug(`Completed cancelled logging for execution ${this.executionId}`, {
+          requestId: this.requestId,
+        })
       }
     } catch (cancelError) {
       this.completing = false
@@ -1312,9 +1316,9 @@ export class LoggingSession {
       } catch (_e) {}
 
       if (this.requestId) {
-        logger.debug(
-          `[${this.requestId}] Completed paused logging for execution ${this.executionId}`
-        )
+        logger.debug(`Completed paused logging for execution ${this.executionId}`, {
+          requestId: this.requestId,
+        })
       }
     } catch (pauseError) {
       this.completing = false
@@ -1360,10 +1364,9 @@ export class LoggingSession {
         return false
       }
       if (this.requestId) {
-        logger.warn(
-          `[${this.requestId}] Logging start failed - falling back to minimal session:`,
-          error
-        )
+        logger.warn('Logging start failed - falling back to minimal session:', error, {
+          requestId: this.requestId,
+        })
       }
 
       // Fallback: create a minimal logging session without full workflow state
@@ -1412,9 +1415,9 @@ export class LoggingSession {
         })
 
         if (this.requestId) {
-          logger.debug(
-            `[${this.requestId}] Started minimal logging for execution ${this.executionId}`
-          )
+          logger.debug(`Started minimal logging for execution ${this.executionId}`, {
+            requestId: this.requestId,
+          })
         }
         return true
       } catch (fallbackError) {
@@ -1424,7 +1427,9 @@ export class LoggingSession {
           return false
         }
         if (this.requestId) {
-          logger.error(`[${this.requestId}] Minimal logging start also failed:`, fallbackError)
+          logger.error('Minimal logging start also failed:', fallbackError, {
+            requestId: this.requestId,
+          })
         }
         return false
       }
@@ -1503,7 +1508,7 @@ export class LoggingSession {
    * structure with no content rather than unprojected values.
    */
   async projectTraceSpansForLiveDisplay(traceSpans: TraceSpan[]): Promise<TraceSpan[]> {
-    return this.projectRawTraceSpans(traceSpans)
+    return this.projectRawTraceSpans(traceSpans, undefined, 'live')
   }
 
   async safeComplete(params: SessionCompleteParams = {}): Promise<void> {
@@ -1517,10 +1522,10 @@ export class LoggingSession {
     } catch (error) {
       if (error instanceof ExecutionScopeDeletedError) return this.endDeletedScopeRun(error)
       const errorMsg = toError(error).message
-      logger.warn(
-        `[${this.requestId || 'unknown'}] Complete failed for execution ${this.executionId}, attempting fallback`,
-        { error: errorMsg }
-      )
+      logger.warn(`Complete failed for execution ${this.executionId}, attempting fallback`, {
+        requestId: this.requestId,
+        error: errorMsg,
+      })
       await this.completeWithCostOnlyLog({
         traceSpans: params.traceSpans,
         endedAt: params.endedAt,
@@ -1547,8 +1552,8 @@ export class LoggingSession {
       if (error instanceof ExecutionScopeDeletedError) return this.endDeletedScopeRun(error)
       const errorMsg = toError(error).message
       logger.warn(
-        `[${this.requestId || 'unknown'}] CompleteWithError failed for execution ${this.executionId}, attempting fallback`,
-        { error: errorMsg }
+        `CompleteWithError failed for execution ${this.executionId}, attempting fallback`,
+        { requestId: this.requestId, error: errorMsg }
       )
       await this.completeWithCostOnlyLog({
         traceSpans: params?.traceSpans,
@@ -1581,8 +1586,8 @@ export class LoggingSession {
       if (error instanceof ExecutionScopeDeletedError) return this.endDeletedScopeRun(error)
       const errorMsg = toError(error).message
       logger.warn(
-        `[${this.requestId || 'unknown'}] CompleteWithCancellation failed for execution ${this.executionId}, attempting fallback`,
-        { error: errorMsg }
+        `CompleteWithCancellation failed for execution ${this.executionId}, attempting fallback`,
+        { requestId: this.requestId, error: errorMsg }
       )
       await this.completeWithCostOnlyLog({
         traceSpans: params?.traceSpans,
@@ -1610,8 +1615,8 @@ export class LoggingSession {
       if (error instanceof ExecutionScopeDeletedError) return this.endDeletedScopeRun(error)
       const errorMsg = toError(error).message
       logger.warn(
-        `[${this.requestId || 'unknown'}] CompleteWithPause failed for execution ${this.executionId}, attempting fallback`,
-        { error: errorMsg }
+        `CompleteWithPause failed for execution ${this.executionId}, attempting fallback`,
+        { requestId: this.requestId, error: errorMsg }
       )
       await this.completeWithCostOnlyLog({
         traceSpans: params?.traceSpans,
@@ -1712,7 +1717,7 @@ export class LoggingSession {
 
       if (markers !== null) void clearProgressMarkers(executionId)
 
-      logger.info(`[${requestId || 'unknown'}] Marked execution ${executionId} as failed`)
+      logger.info(`Marked execution ${executionId} as failed`, { requestId })
     } catch (error) {
       logger.error(`Failed to mark execution ${executionId} as failed:`, {
         error: toError(error).message,
@@ -1737,7 +1742,8 @@ export class LoggingSession {
     this.completing = true
 
     logger.warn(
-      `[${this.requestId || 'unknown'}] Logging completion failed for execution ${this.executionId} - attempting cost-only fallback`
+      `Logging completion failed for execution ${this.executionId} - attempting cost-only fallback`,
+      { requestId: this.requestId }
     )
 
     try {
@@ -1765,23 +1771,21 @@ export class LoggingSession {
 
       this.completed = true
 
-      logger.info(
-        `[${this.requestId || 'unknown'}] Cost-only fallback succeeded for execution ${this.executionId}`
-      )
+      logger.info(`Cost-only fallback succeeded for execution ${this.executionId}`, {
+        requestId: this.requestId,
+      })
     } catch (fallbackError) {
       this.completing = false
       if (fallbackError instanceof ExecutionScopeDeletedError) {
         return this.endDeletedScopeRun(fallbackError)
       }
       this.completionAttemptFailed = true
-      logger.error(
-        `[${this.requestId || 'unknown'}] Cost-only fallback also failed for execution ${this.executionId}:`,
-        {
-          error: toError(fallbackError).message,
-          cause: describeError(fallbackError),
-          retryable: isRetryableInfrastructureError(fallbackError),
-        }
-      )
+      logger.error(`Cost-only fallback also failed for execution ${this.executionId}:`, {
+        requestId: this.requestId,
+        error: toError(fallbackError).message,
+        cause: describeError(fallbackError),
+        retryable: isRetryableInfrastructureError(fallbackError),
+      })
     }
   }
 }
