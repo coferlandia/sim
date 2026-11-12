@@ -143,6 +143,7 @@ jobs:
     # and cascade-skips the deploy chain (migrate -> promote ->
     # CodeDeploy) — this bit us on 2026-07-23. State requirements explicitly.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.push-checks.result == 'success' &&
       github.event_name == 'push' &&
@@ -164,7 +165,7 @@ jobs:
       contents: read
       id-token: write
     name: migrate-dev
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.repository == 'simstudioai/sim' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
     uses: ./.github/workflows/migrate.yml
     with:
       environment: dev
@@ -176,7 +177,7 @@ jobs:
   # Dev: build immutable images alongside the schema push and Trigger upload.
   image-dev:
     name: image-dev (${{ matrix.id }})
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.repository == 'simstudioai/sim' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: &runner-matrix ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && matrix.bs_runner || matrix.gh_runner }}
     timeout-minutes: 30
     permissions:
@@ -266,6 +267,7 @@ jobs:
   trigger-upload:
     name: trigger-upload
     if: >-
+      github.repository == 'simstudioai/sim' &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: &runner-4vcpu ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
@@ -345,6 +347,7 @@ jobs:
   image-amd64:
     name: image-amd64 (${{ matrix.id }})
     if: >-
+      github.repository == 'simstudioai/sim' &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: *runner-matrix
@@ -480,6 +483,7 @@ jobs:
     needs: [migrate, image-amd64, trigger-upload, migrate-dev, image-dev]
     # Explicit results: see migrate's comment.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() && github.event_name == 'push' &&
       (
         ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') &&
@@ -602,6 +606,7 @@ jobs:
     needs: [promote, trigger-upload]
     # Explicit results also suppress skip propagation from optional ancestors.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') &&
@@ -685,6 +690,7 @@ jobs:
     name: indexnow
     needs: [promote, trigger-promote]
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
@@ -749,7 +755,7 @@ jobs:
     name: image-arm64 (${{ matrix.id }})
     runs-on: *runner-matrix
     timeout-minutes: 30
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.repository == 'simstudioai/sim' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
@@ -818,6 +824,7 @@ jobs:
     needs: [promote, image-arm64, version]
     # Explicit results: see migrate's comment.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.promote.result == 'success' &&
       needs.image-arm64.result == 'success' &&
@@ -1095,6 +1102,7 @@ jobs:
     timeout-minutes: 15
     needs: [attest-subjects]
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.attest-subjects.result == 'success'
     permissions:
@@ -1212,6 +1220,7 @@ jobs:
     needs: [promote, docs-changes]
     # Explicit results: see migrate's comment.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.promote.result == 'success' &&
       needs.docs-changes.result == 'success' &&
@@ -1239,6 +1248,7 @@ jobs:
     # fires from the ECR tags moved by promote, upstream of this job, and
     # only the GHCR mirrors are attested.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.ghcr.result == 'success' &&
       needs.attest-subjects.result == 'success' &&
@@ -1299,6 +1309,7 @@ jobs:
     # intentionally skipped transitive dependency on main, which would
     # otherwise cascade-skip this job even when every direct need succeeded.
     if: >-
+      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.release.result == 'success' &&
       needs.desktop-signing.result == 'success' &&
@@ -1334,6 +1345,7 @@ jobs:
     # cancelled") so a probe failure can't produce a release with no build.
     if: >-
       ${{
+        github.repository == 'simstudioai/sim' &&
         !cancelled() &&
         needs.desktop-changes.outputs.changed == 'true' &&
         needs.desktop-signing.result == 'success' &&
@@ -1397,6 +1409,7 @@ jobs:
           echo "✅ Created draft prerelease $TAG"
 
   prerelease-build:
+    if: github.repository == 'simstudioai/sim'
     name: prerelease-build
     needs: [prerelease-create, desktop-signing]
     # The reusable workflow declares contents: write for its stable-release
@@ -1422,6 +1435,7 @@ jobs:
   # attached — this is what makes a dev/staging push atomic from the shell's
   # point of view.
   prerelease-publish:
+    if: github.repository == 'simstudioai/sim'
     name: prerelease-publish
     runs-on: *runner-2vcpu
     timeout-minutes: 5
@@ -1446,6 +1460,7 @@ jobs:
   # commits behind stale tags). Leftover drafts (failed or superseded builds)
   # are always garbage by this point — the current run's release is published.
   prerelease-prune:
+    if: github.repository == 'simstudioai/sim'
     name: prerelease-prune
     runs-on: *runner-2vcpu
     timeout-minutes: 5

@@ -175,6 +175,7 @@ jobs:
   # lifecycle scripts for a tarball, so nothing is rebuilt here, and provenance
   # is attached automatically.
   publish:
+    if: github.repository == 'simstudioai/sim'
     name: publish
     needs: build
     runs-on: ubuntu-latest
