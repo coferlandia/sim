@@ -40,7 +40,7 @@ jobs:
     # Network-bound on the embeddings API: ~9% CPU and ~3% peak memory on 8 vCPU.
     runs-on: ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish
+    if: github.repository == 'simstudioai/sim' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish
     concurrency:
       group: docs-search-index-production
       cancel-in-progress: false
