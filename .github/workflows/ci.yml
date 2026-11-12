@@ -33,8 +33,29 @@ permissions:
 jobs:
   checks:
     name: checks
-    if: github.ref != 'refs/heads/dev' || github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/checks.yml
+
+  push-checks:
+    name: push-checks
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
+    runs-on: ubuntu-24.04
+    # Validation can chain a 25-minute build and a 30-minute acceptance job.
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+      checks: read
+    steps:
+      - name: Checkout admission gate
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
+        with:
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - name: Require this commit's independent push validation
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/wait-for-push-checks.sh
 
   # Detect if this is a version release commit (e.g., "v0.5.24: ...")
   # Smallest runner on purpose: a few seconds of pure shell over the commit
@@ -116,15 +137,14 @@ jobs:
       contents: read
       id-token: write
     name: migrate
-    needs: [checks]
+    needs: [push-checks]
     # Explicit need results instead of the implicit success(): a skipped job
     # anywhere in the transitive needs chain silently fails implicit success()
     # and cascade-skips the deploy chain (migrate -> promote ->
     # CodeDeploy) — this bit us on 2026-07-23. State requirements explicitly.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
-      needs.checks.result == 'success' &&
+      needs.push-checks.result == 'success' &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     uses: ./.github/workflows/migrate.yml
@@ -144,7 +164,7 @@ jobs:
       contents: read
       id-token: write
     name: migrate-dev
-    if: github.repository == 'simstudioai/sim' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     uses: ./.github/workflows/migrate.yml
     with:
       environment: dev
@@ -156,7 +176,7 @@ jobs:
   # Dev: build immutable images alongside the schema push and Trigger upload.
   image-dev:
     name: image-dev (${{ matrix.id }})
-    if: github.repository == 'simstudioai/sim' && github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
     runs-on: &runner-matrix ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && matrix.bs_runner || matrix.gh_runner }}
     timeout-minutes: 30
     permissions:
@@ -219,7 +239,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
       - name: Login to Docker Hub
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -246,11 +266,13 @@ jobs:
   trigger-upload:
     name: trigger-upload
     if: >-
-      github.repository == 'simstudioai/sim' &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: &runner-4vcpu ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     outputs:
       version: ${{ steps.deploy.outputs.deploymentVersion }}
       environment: ${{ steps.target.outputs.environment }}
@@ -276,6 +298,15 @@ jobs:
           echo "environment=$TRIGGER_ENV" >> "$GITHUB_OUTPUT"
           echo "preview_branch=$TRIGGER_BRANCH" >> "$GITHUB_OUTPUT"
 
+      # The deploy syncs an environment listed in `vars.TRIGGER_ENV_SYNC_TARGETS` from the app's
+      # env-vars secret (see `@sim/runtime-secrets/trigger-env`), which needs read access to that secret.
+      - name: Configure AWS credentials for the env sync
+        if: contains(format(',{0},', vars.TRIGGER_ENV_SYNC_TARGETS), format(',{0},', steps.target.outputs.environment))
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ github.ref == 'refs/heads/main' && secrets.AWS_ROLE_TO_ASSUME || secrets.STAGING_AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ github.ref == 'refs/heads/main' && secrets.AWS_REGION || secrets.STAGING_AWS_REGION }}
+
       - name: Upload Trigger.dev version without promotion
         id: deploy
         working-directory: ./apps/sim
@@ -284,6 +315,7 @@ jobs:
           TRIGGER_PROJECT_ID: ${{ secrets.TRIGGER_PROJECT_ID }}
           TRIGGER_ENV: ${{ steps.target.outputs.environment }}
           TRIGGER_BRANCH: ${{ steps.target.outputs.preview_branch }}
+          TRIGGER_ENV_SYNC_TARGETS: ${{ vars.TRIGGER_ENV_SYNC_TARGETS }}
         run: |
           set -eo pipefail
           if [ -z "$TRIGGER_ACCESS_TOKEN" ] || [ -z "$TRIGGER_PROJECT_ID" ]; then
@@ -313,7 +345,6 @@ jobs:
   image-amd64:
     name: image-amd64 (${{ matrix.id }})
     if: >-
-      github.repository == 'simstudioai/sim' &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging')
     runs-on: *runner-matrix
@@ -373,14 +404,14 @@ jobs:
         uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2
 
       - name: Login to Docker Hub
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Login to GHCR
         if: github.ref == 'refs/heads/main'
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -449,7 +480,6 @@ jobs:
     needs: [migrate, image-amd64, trigger-upload, migrate-dev, image-dev]
     # Explicit results: see migrate's comment.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() && github.event_name == 'push' &&
       (
         ((github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') &&
@@ -572,7 +602,6 @@ jobs:
     needs: [promote, trigger-upload]
     # Explicit results also suppress skip propagation from optional ancestors.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       github.event_name == 'push' &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/staging') &&
@@ -656,7 +685,6 @@ jobs:
     name: indexnow
     needs: [promote, trigger-promote]
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
@@ -721,7 +749,7 @@ jobs:
     name: image-arm64 (${{ matrix.id }})
     runs-on: *runner-matrix
     timeout-minutes: 30
-    if: github.repository == 'simstudioai/sim' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     permissions:
       contents: read
       packages: write
@@ -765,7 +793,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
 
       - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -790,7 +818,6 @@ jobs:
     needs: [promote, image-arm64, version]
     # Explicit results: see migrate's comment.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.promote.result == 'success' &&
       needs.image-arm64.result == 'success' &&
@@ -820,7 +847,7 @@ jobs:
 
     steps:
       - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -892,7 +919,6 @@ jobs:
     timeout-minutes: 10
     needs: [ghcr, version]
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.ghcr.result == 'success' &&
       needs.version.result == 'success' &&
@@ -905,7 +931,7 @@ jobs:
       count: ${{ steps.resolve.outputs.count }}
     steps:
       - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1069,7 +1095,6 @@ jobs:
     timeout-minutes: 15
     needs: [attest-subjects]
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.attest-subjects.result == 'success'
     permissions:
@@ -1087,7 +1112,7 @@ jobs:
 
     steps:
       - name: Login to GHCR
-        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
@@ -1136,7 +1161,7 @@ jobs:
           push-to-registry: true
 
       - name: Install Cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
 
       # The attestations above prove how the image was built; this is the plain
       # signature that admission controllers (Kyverno, the Sigstore policy
@@ -1187,7 +1212,6 @@ jobs:
     needs: [promote, docs-changes]
     # Explicit results: see migrate's comment.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.promote.result == 'success' &&
       needs.docs-changes.result == 'success' &&
@@ -1215,7 +1239,6 @@ jobs:
     # fires from the ECR tags moved by promote, upstream of this job, and
     # only the GHCR mirrors are attested.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.ghcr.result == 'success' &&
       needs.attest-subjects.result == 'success' &&
@@ -1276,7 +1299,6 @@ jobs:
     # intentionally skipped transitive dependency on main, which would
     # otherwise cascade-skip this job even when every direct need succeeded.
     if: >-
-      github.repository == 'simstudioai/sim' &&
       !cancelled() &&
       needs.release.result == 'success' &&
       needs.desktop-signing.result == 'success' &&
@@ -1312,7 +1334,6 @@ jobs:
     # cancelled") so a probe failure can't produce a release with no build.
     if: >-
       ${{
-        github.repository == 'simstudioai/sim' &&
         !cancelled() &&
         needs.desktop-changes.outputs.changed == 'true' &&
         needs.desktop-signing.result == 'success' &&
@@ -1376,7 +1397,6 @@ jobs:
           echo "✅ Created draft prerelease $TAG"
 
   prerelease-build:
-    if: github.repository == 'simstudioai/sim'
     name: prerelease-build
     needs: [prerelease-create, desktop-signing]
     # The reusable workflow declares contents: write for its stable-release
@@ -1402,7 +1422,6 @@ jobs:
   # attached — this is what makes a dev/staging push atomic from the shell's
   # point of view.
   prerelease-publish:
-    if: github.repository == 'simstudioai/sim'
     name: prerelease-publish
     runs-on: *runner-2vcpu
     timeout-minutes: 5
@@ -1427,7 +1446,6 @@ jobs:
   # commits behind stale tags). Leftover drafts (failed or superseded builds)
   # are always garbage by this point — the current run's release is published.
   prerelease-prune:
-    if: github.repository == 'simstudioai/sim'
     name: prerelease-prune
     runs-on: *runner-2vcpu
     timeout-minutes: 5

@@ -8,7 +8,6 @@
     "apps/sim/app/api/cron/renew-subscriptions/route.test.ts": 1,
     "apps/sim/app/api/desktop/tool/authorize/route.test.ts": 1,
     "apps/sim/app/api/mcp/oauth/start/route.test.ts": 1,
-    "apps/sim/app/api/schedules/[id]/route.test.ts": 1,
     "apps/sim/app/api/v2/workflows/[workflowId]/execute/route.test.ts": 1,
     "apps/sim/app/api/webhooks/poll/[provider]/route.test.ts": 1,
     "apps/sim/app/api/workflows/[id]/execute/route.test.ts": 1,
@@ -271,7 +270,6 @@
     "apps/sim/lib/pptx-renderer/shapes/custom-geometry.ts": 1,
     "apps/sim/lib/pptx-renderer/shapes/presets.ts": 1,
     "apps/sim/lib/table/workflow-columns.ts": 1,
-    "apps/sim/lib/tools/falai-pricing.test.ts": 1,
     "apps/sim/lib/uploads/contexts/workspace/file-manager-errors.test.ts": 1,
     "apps/sim/lib/uploads/contexts/workspace/file-manager.test.ts": 1,
     "apps/sim/lib/uploads/contexts/workspace/track-chat-upload.test.ts": 1,
@@ -669,5 +667,6 @@
   "bare-route-handler": {
     "apps/sim/app/api/health/route.ts": 1,
     "apps/sim/app/api/mothership/chat/stream/route.ts": 1
-  }
+  },
+  "log-message-tag": {}
 }

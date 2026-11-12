@@ -3,6 +3,7 @@ import { createLogger } from '@sim/logger'
 import { safeCompare } from '@sim/security/compare'
 import { toRecord } from '@sim/utils/object'
 import { getNotificationUrl, getProviderConfig } from '@/lib/webhooks/provider-subscription-utils'
+import { WebhookDeploymentConfigurationError } from '@/lib/webhooks/providers/errors'
 import type {
   DeleteSubscriptionContext,
   EventMatchContext,
@@ -99,9 +100,9 @@ export const pagerdutyHandler: WebhookProviderHandler = {
 
     const { isPagerDutyEventMatch } = await import('@/triggers/pagerduty/utils')
     if (!isPagerDutyEventMatch(triggerId, eventType || '')) {
-      logger.debug(
-        `[${requestId}] PagerDuty event '${eventType}' does not match trigger ${triggerId}, skipping`
-      )
+      logger.debug(`PagerDuty event '${eventType}' does not match trigger ${triggerId}, skipping`, {
+        requestId,
+      })
       return false
     }
     return true
@@ -145,8 +146,11 @@ export const pagerdutyHandler: WebhookProviderHandler = {
     const apiKey = config.apiKey as string | undefined
     const triggerId = config.triggerId as string | undefined
 
-    if (!apiKey)
-      throw new Error('PagerDuty API Key is required to create the webhook subscription.')
+    if (!apiKey) {
+      throw new WebhookDeploymentConfigurationError(
+        'PagerDuty API Key is required to create the webhook subscription.'
+      )
+    }
 
     const { getPagerDutyEvents } = await import('@/triggers/pagerduty/utils')
     const res = await fetch(`${PAGERDUTY_API_BASE}/webhook_subscriptions`, {
@@ -164,7 +168,8 @@ export const pagerdutyHandler: WebhookProviderHandler = {
 
     if (!res.ok) {
       const detail = await res.text().catch(() => '')
-      logger.error(`[${ctx.requestId}] Failed to create PagerDuty webhook (${res.status})`, {
+      logger.error(`Failed to create PagerDuty webhook (${res.status})`, {
+        requestId: ctx.requestId,
         detail,
       })
       if (res.status === 401)
@@ -189,7 +194,9 @@ export const pagerdutyHandler: WebhookProviderHandler = {
       throw new Error('PagerDuty webhook created but no signing secret was returned on creation.')
     }
 
-    logger.info(`[${ctx.requestId}] Created PagerDuty webhook subscription ${externalId}`)
+    logger.info(`Created PagerDuty webhook subscription ${externalId}`, {
+      requestId: ctx.requestId,
+    })
     return { providerConfigUpdates: { externalId, webhookSecret: secret } }
   },
 
@@ -200,9 +207,9 @@ export const pagerdutyHandler: WebhookProviderHandler = {
 
     if (!apiKey || !externalId) {
       if (ctx.strict) throw new Error('Missing PagerDuty API key or subscription ID for deletion.')
-      logger.warn(
-        `[${ctx.requestId}] Skipping PagerDuty webhook cleanup — missing API key or subscription ID`
-      )
+      logger.warn('Skipping PagerDuty webhook cleanup — missing API key or subscription ID', {
+        requestId: ctx.requestId,
+      })
       return
     }
 
@@ -213,11 +220,13 @@ export const pagerdutyHandler: WebhookProviderHandler = {
 
     if (!res.ok && res.status !== 404) {
       if (ctx.strict) throw new Error(`Failed to delete PagerDuty webhook: ${res.status}`)
-      logger.warn(
-        `[${ctx.requestId}] Failed to delete PagerDuty webhook ${externalId} (non-fatal): ${res.status}`
-      )
+      logger.warn(`Failed to delete PagerDuty webhook ${externalId} (non-fatal): ${res.status}`, {
+        requestId: ctx.requestId,
+      })
       return
     }
-    logger.info(`[${ctx.requestId}] Deleted PagerDuty webhook subscription ${externalId}`)
+    logger.info(`Deleted PagerDuty webhook subscription ${externalId}`, {
+      requestId: ctx.requestId,
+    })
   },
 }

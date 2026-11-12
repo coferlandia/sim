@@ -209,7 +209,9 @@ export interface ReplaceWorkflowNormalizedStateInput {
    * lock is taken, inside the same transaction, so a concurrent write that
    * commits between a caller's own read and this one cannot be silently
    * overwritten by a stale graph. Passing an already-read value is correct only
-   * when the caller composed it without reading the stored graph.
+   * when the caller composed it without reading the stored graph. A caller that
+   * cannot compose its graph under the lock re-reads the stored graph in the
+   * reader and refuses the write when it changed.
    */
   state: ReplaceWorkflowState | ((tx: DbOrTx) => Promise<ReplaceWorkflowState>)
   requestId?: string
@@ -244,7 +246,6 @@ export async function replaceWorkflowNormalizedState(
   input: ReplaceWorkflowNormalizedStateInput
 ): Promise<ReplaceWorkflowNormalizedStateResult> {
   const { workflowId, workspaceId, attributedUserId, subjectUserId, state, requestId } = input
-  const logPrefix = requestId ? `[${requestId}] ` : ''
 
   /**
    * Hoisted ahead of the transaction even though the shared write checks it
@@ -253,9 +254,8 @@ export async function replaceWorkflowNormalizedState(
    * lock or reaches drizzle's transaction wrapper — so the thrown
    * `OrchestrationError` arrives at callers unwrapped.
    *
-   * A caller that produces its graph from a reader is unaffected: the reader
-   * composes a graph from what is already stored, and this pass covers the
-   * blocks it hands back through the inner check.
+   * A reader's graph does not exist until the lock is held, so it is checked
+   * only by the inner pass.
    */
   if (typeof state !== 'function') {
     await assertNoWithheldBlockType({ workspaceId, subjectUserId }, Object.values(state.blocks))
@@ -336,7 +336,8 @@ export async function replaceWorkflowNormalizedState(
   })
 
   if (!saveResult.success) {
-    logger.error(`${logPrefix}Failed to save workflow ${workflowId} state`, {
+    logger.error(`Failed to save workflow ${workflowId} state`, {
+      requestId,
       error: saveResult.error,
     })
     throw new WorkflowStatePersistenceError(saveResult.error ?? 'Unknown persistence failure')
@@ -350,16 +351,17 @@ export async function replaceWorkflowNormalizedState(
         attributedUserId
       )
       if (saved > 0) {
-        logger.info(`${logPrefix}Persisted ${saved} custom tool(s) to database`, { workflowId })
+        logger.info(`Persisted ${saved} custom tool(s) to database`, { requestId, workflowId })
       }
       if (errors.length > 0) {
-        logger.warn(`${logPrefix}Some custom tools failed to persist`, { errors, workflowId })
+        logger.warn('Some custom tools failed to persist', { requestId, errors, workflowId })
       }
     } catch (error) {
-      logger.error(`${logPrefix}Failed to persist custom tools`, { error, workflowId })
+      logger.error('Failed to persist custom tools', { requestId, error, workflowId })
     }
   } else {
-    logger.warn(`${logPrefix}Workflow has no workspaceId, skipping custom tools persistence`, {
+    logger.warn('Workflow has no workspaceId, skipping custom tools persistence', {
+      requestId,
       workflowId,
     })
   }

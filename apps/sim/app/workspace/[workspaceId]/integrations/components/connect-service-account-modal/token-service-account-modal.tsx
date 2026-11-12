@@ -11,17 +11,21 @@ import {
   SecretInput,
 } from '@sim/emcn'
 import { createLogger } from '@sim/logger'
+import { getErrorMessage } from '@sim/utils/errors'
 import { isApiClientError } from '@/lib/api/client/errors'
 import {
   resourceScopeFields,
   resourceScopeFromOwner,
   resourceScopeKey,
 } from '@/lib/core/resource-scope'
+import type { ServiceAccountSecretFields } from '@/lib/credentials/service-account-secret'
 import {
+  CLIENT_CREDENTIALS_AUTH_METHOD,
   getTokenServiceAccountErrorMessage,
   type TokenServiceAccountDescriptor,
   type TokenServiceAccountField,
 } from '@/lib/credentials/token-service-accounts/descriptors'
+import { ClientCredentialsFields } from '@/app/workspace/[workspaceId]/integrations/components/connect-service-account-modal/client-credentials-fields'
 import { withBrandIcon } from '@/blocks/brand-icon'
 import {
   useCreateScopedCredential,
@@ -36,6 +40,8 @@ function normalizeDomainInput(raw: string): string {
     .replace(/^https?:\/\//i, '')
     .replace(/[/?#].*$/, '')
 }
+
+type TokenAuthMethod = 'token' | typeof CLIENT_CREDENTIALS_AUTH_METHOD
 
 function openDocs(url: string): void {
   window.open(url, '_blank', 'noopener,noreferrer')
@@ -55,6 +61,10 @@ interface TokenServiceAccountModalProps {
   initialDescription?: string
   /** Called with the credential id after a successful create or reconnect. */
   onCreated?: (credentialId: string) => void
+  onSubmitCredentials?: (
+    fields: ServiceAccountSecretFields & { displayName?: string; description?: string }
+  ) => Promise<string>
+  submitPending?: boolean
 }
 
 /**
@@ -86,9 +96,30 @@ function TokenServiceAccountModalForm({
   initialDisplayName,
   initialDescription,
   onCreated,
+  onSubmitCredentials,
+  submitPending,
 }: TokenServiceAccountModalProps) {
+  const clientCredentials = descriptor.clientCredentials
+  const [selectedAuthMethod, setSelectedAuthMethod] = useState<TokenAuthMethod | null>(null)
+  /**
+   * A reconnect cannot pre-select the mode: the stored one lives inside the encrypted secret and
+   * is never returned to the client, so the admin restates it while retyping the secret. Until
+   * then neither mode's fields show, so a reconnect never switches modes by default.
+   */
+  const mustRestateAuthMethod = Boolean(clientCredentials && credentialId && !selectedAuthMethod)
+  const authMethod: TokenAuthMethod | null =
+    selectedAuthMethod ??
+    (mustRestateAuthMethod
+      ? null
+      : clientCredentials?.preferred
+        ? CLIENT_CREDENTIALS_AUTH_METHOD
+        : 'token')
+  const usesClientCredentials = authMethod === CLIENT_CREDENTIALS_AUTH_METHOD
   const [apiToken, setApiToken] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
   const [domain, setDomain] = useState('')
+  const [providerWorkspaceId, setProviderWorkspaceId] = useState('')
   const [displayName, setDisplayName] = useState(initialDisplayName ?? '')
   const [description, setDescription] = useState(initialDescription ?? '')
   const [error, setError] = useState<string | null>(null)
@@ -98,11 +129,18 @@ function TokenServiceAccountModalForm({
 
   const tokenField = descriptor.fields.find((field) => field.id === 'apiToken')
   const domainField = descriptor.fields.find((field) => field.id === 'domain')
+  const workspaceField = descriptor.fields.find((field) => field.id === 'providerWorkspaceId')
 
   const trimmedToken = apiToken.trim()
-  const normalizedDomain = normalizeDomainInput(domain)
-  const isPending = createCredential.isPending || updateCredential.isPending
-  const isDisabled = !trimmedToken || (Boolean(domainField) && !normalizedDomain) || isPending
+  const normalizedDomain = domainField?.url ? domain.trim() : normalizeDomainInput(domain)
+  const isPending =
+    createCredential.isPending || updateCredential.isPending || submitPending === true
+  const isDisabled =
+    !authMethod ||
+    (usesClientCredentials ? !clientId.trim() || !clientSecret.trim() : !trimmedToken) ||
+    (Boolean(domainField) && !normalizedDomain) ||
+    (Boolean(workspaceField) && !providerWorkspaceId.trim()) ||
+    isPending
 
   const hintFor = (field: TokenServiceAccountField, value: string): string | undefined => {
     if (!field.hintPattern || !field.hintMessage || value.length === 0) return undefined
@@ -114,8 +152,25 @@ function TokenServiceAccountModalForm({
     if (isDisabled) return
     try {
       const secretFields = {
-        apiToken: trimmedToken,
+        ...(usesClientCredentials
+          ? {
+              authMethod: CLIENT_CREDENTIALS_AUTH_METHOD,
+              clientId: clientId.trim(),
+              clientSecret: clientSecret.trim(),
+            }
+          : { apiToken: tokenField?.preserveWhitespace ? apiToken : trimmedToken }),
+        ...(workspaceField ? { providerWorkspaceId: providerWorkspaceId.trim() } : {}),
         ...(domainField ? { domain: normalizedDomain } : {}),
+      }
+      if (onSubmitCredentials) {
+        const savedId = await onSubmitCredentials({
+          ...secretFields,
+          displayName: displayName.trim() || undefined,
+          description: description.trim() || undefined,
+        })
+        onCreated?.(savedId)
+        onOpenChange(false)
+        return
       }
       if (credentialId) {
         await updateCredential.mutateAsync({
@@ -140,7 +195,14 @@ function TokenServiceAccountModalForm({
       onOpenChange(false)
     } catch (err: unknown) {
       const code = isApiClientError(err) ? err.code : undefined
-      setError(getTokenServiceAccountErrorMessage(descriptor, code))
+      setError(
+        getTokenServiceAccountErrorMessage(
+          descriptor,
+          code,
+          onSubmitCredentials ? getErrorMessage(err, 'Could not save this connection.') : undefined,
+          authMethod ?? undefined
+        )
+      )
       logger.error(`Failed to add ${descriptor.serviceLabel} service account credential`, err)
     }
   }
@@ -155,7 +217,41 @@ function TokenServiceAccountModalForm({
         Add {serviceName} {descriptor.connectNoun}
       </ChipModalHeader>
       <ChipModalBody>
-        {tokenField && (
+        {clientCredentials && (
+          <ChipModalField
+            type='dropdown'
+            title='Authentication'
+            value={authMethod ?? undefined}
+            onChange={(value) => {
+              setSelectedAuthMethod(value as TokenAuthMethod)
+              if (error) setError(null)
+            }}
+            options={[
+              { value: CLIENT_CREDENTIALS_AUTH_METHOD, label: clientCredentials.label },
+              { value: 'token', label: clientCredentials.tokenLabel },
+            ]}
+            required
+          />
+        )}
+
+        {clientCredentials && usesClientCredentials && (
+          <ClientCredentialsFields
+            clientId={clientId}
+            clientSecret={clientSecret}
+            onClientIdChange={(value) => {
+              setClientId(value)
+              if (error) setError(null)
+            }}
+            onClientSecretChange={(value) => {
+              setClientSecret(value)
+              if (error) setError(null)
+            }}
+            clientIdHint={clientCredentials.helpText}
+            secretInputName={`${descriptor.providerId}_client_secret`}
+          />
+        )}
+
+        {tokenField && authMethod === 'token' && (
           <ChipModalField
             type='custom'
             title={tokenField.label}
@@ -179,6 +275,17 @@ function TokenServiceAccountModalForm({
           </ChipModalField>
         )}
 
+        {workspaceField && (
+          <ChipModalField
+            type='input'
+            title={workspaceField.label}
+            value={providerWorkspaceId}
+            onChange={setProviderWorkspaceId}
+            placeholder={workspaceField.placeholder}
+            required
+            autoComplete='off'
+          />
+        )}
         {domainField && (
           <ChipModalField
             type='input'

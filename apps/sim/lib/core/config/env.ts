@@ -134,6 +134,7 @@ export const env = createEnv({
     ALLOW_PRIVATE_DATABASE_HOSTS:          z.boolean().optional(),                 // Deprecated alias for the egress allowlist, kept so existing self-hosted deployments keep working. Equivalent to allowing every private, reserved, and loopback destination. Prefer EGRESS_ALLOWED_HOSTS / EGRESS_ALLOWED_IP_RANGES, which name specific destinations.
     EGRESS_ALLOWED_HOSTS:                  z.string().optional(),                  // Comma-separated hostnames outbound requests may reach on a private network, leading wildcard allowed (e.g. "host.docker.internal,*.svc.cluster.local"). Self-hosted only; ignored on the hosted platform. Replaces ALLOW_PRIVATE_DATABASE_HOSTS.
     EGRESS_ALLOWED_IP_RANGES:              z.string().optional(),                  // Comma-separated CIDRs or IPs outbound requests may reach on a private network (e.g. "10.0.0.0/8,192.168.65.254/32"). Self-hosted only; never lifts the cloud-metadata block.
+    DOMAIN_VERIFICATION_NAMESERVERS:       z.string().optional(),                  // Comma-separated nameserver IPs for the domain-verification TXT lookup (e.g. "10.0.0.2"). Defaults to 1.1.1.1 and 8.8.8.8; set it where outbound DNS is restricted to an internal resolver.
     ALLOWED_LOGIN_EMAILS:                  z.string().optional(),                  // Comma-separated list of allowed email addresses for login
     ALLOWED_LOGIN_DOMAINS:                 z.string().optional(),                  // Comma-separated list of allowed email domains for login
     BLOCKED_SIGNUP_DOMAINS:                z.string().optional(),                  // Comma-separated list of email domains blocked from signing up (e.g., "gmail.com,yahoo.com")
@@ -148,6 +149,9 @@ export const env = createEnv({
     ENCRYPT_ACCOUNT_TOKENS:                z.boolean().optional(),                 // Opt-out: OAuth access/refresh tokens are sealed on write (read by @sim/db) and backfilled by migrate whenever ENCRYPTION_KEY is 64 hex characters; false or 0 writes plaintext. Sealed tokens need v0.9.33+ on every process that reads them
     INTERNAL_API_SECRET:                   z.string().min(32),                     // Secret for internal API authentication
     INTERNAL_JWT_SECRET:                   z.string().min(32).optional(),          // Dedicated signing key for internal JWTs (falls back to INTERNAL_API_SECRET); separating limits blast radius if one leaks
+    WORKLOAD_IDENTITY_SIGNING_KEY:         z.string().min(1).optional(),           // PKCS#8 PEM RSA private key that signs Sim workload-identity (OIDC) tokens for keyless AWS/cloud credentials; unset disables the OIDC credential mode
+    WORKLOAD_IDENTITY_PREVIOUS_KEY:        z.string().min(1).optional(),           // Retiring workload-identity key (private or public PEM), still published in the JWKS during rotation so tokens it signed keep verifying
+    WORKLOAD_IDENTITY_ISSUER:              z.string().url().optional(),            // Workload-identity issuer URL (default <NEXT_PUBLIC_APP_URL>/oidc/workload). Customer trust policies pin it, so it must never change once in use
 
     // Copilot
     COPILOT_API_KEY:                       z.string().min(1).optional(),           // Secret for internal sim agent API authentication
@@ -220,6 +224,8 @@ export const env = createEnv({
     STRIPE_PRICE_TEAM_100_MO:              z.string().min(1).optional(),           // Team Max: $100/seat/mo
     STRIPE_PRICE_TEAM_100_YR:              z.string().min(1).optional(),           // Team Max: $1,020/seat/yr
     OVERAGE_THRESHOLD_DOLLARS:             z.number().optional().default(100),     // Dollar threshold for incremental overage billing (default: $100)
+    AWS_MARKETPLACE_PRODUCT_CODE:          z.string().min(1).optional(),           // AWS Marketplace SaaS product code; unset turns the Marketplace registration, claim, and reconcile surfaces off
+    AWS_MARKETPLACE_EVENTS_QUEUE_URL:      z.string().url().optional(),            // SQS queue receiving the Marketplace agreement EventBridge events the reconcile cron drains
 
     // Email & Communication
     EMAIL_VERIFICATION_ENABLED:            z.boolean().optional(),                 // Enable email verification for user registration and login (defaults to false)
@@ -346,6 +352,7 @@ export const env = createEnv({
     TRIGGER_PROJECT_ID:                    z.string().optional(),                  // Trigger.dev project ID
     TRIGGER_SECRET_KEY:                    z.string().min(1).optional(),           // Trigger.dev secret key for background jobs
     TRIGGER_DEV_ENABLED:                   z.boolean().optional(),                 // Toggle to enable/disable Trigger.dev for async jobs
+    TRIGGER_ENV_SYNC_TARGETS:              z.string().optional(),                  // Deploy-time only: comma-separated Trigger.dev environments (prod,staging,preview) synced from the app's env-vars secret
     CRON_SECRET:                           z.string().optional(),                  // Secret for authenticating cron job requests
     SCHEDULE_EXECUTION_CONCURRENCY_LIMIT:  z.string().optional().default('30'),
     WORKFLOW_EXECUTION_CONCURRENCY_LIMIT:  z.string().optional().default('75'),
@@ -365,6 +372,8 @@ export const env = createEnv({
     AWS_ACCESS_KEY_ID:                     z.string().optional(),                  // AWS access key ID
     AWS_SECRET_ACCESS_KEY:                 z.string().optional(),                  // AWS secret access key
     TRIGGER_AWS_ROLE_ARN:                  z.string().optional(),                  // Role Trigger.dev runs assume through workload identity, instead of static keys
+    AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: z.string().optional(),                 // Set by ECS: path of the task-role credential endpoint
+    AWS_CONTAINER_CREDENTIALS_FULL_URI:    z.string().optional(),                  // Set by ECS Anywhere/EKS Pod Identity: full task-role credential endpoint URL
     S3_BUCKET_NAME:                        z.string().optional(),                  // S3 bucket for general file storage
     S3_KB_BUCKET_NAME:                     z.string().optional(),                  // S3 bucket for knowledge base files
     S3_EXECUTION_FILES_BUCKET_NAME:        z.string().optional(),                  // S3 bucket for workflow execution files

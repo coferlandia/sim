@@ -4,6 +4,7 @@ import { getErrorMessage } from '@sim/utils/errors'
 import { isRecordLike, toRecord } from '@sim/utils/object'
 import { and, eq, isNull, ne } from 'drizzle-orm'
 import { getNotificationUrl, getProviderConfig } from '@/lib/webhooks/provider-subscription-utils'
+import { WebhookDeploymentConfigurationError } from '@/lib/webhooks/providers/errors'
 import type {
   DeleteSubscriptionContext,
   FormatInputContext,
@@ -166,8 +167,8 @@ export const jotformHandler: WebhookProviderHandler = {
   async createSubscription(ctx: SubscriptionContext): Promise<SubscriptionResult | undefined> {
     const credentials = readCredentials(ctx.webhook)
     if ('error' in credentials) {
-      logger.warn(`[${ctx.requestId}] ${credentials.error}`, { webhookId: ctx.webhook.id })
-      throw new Error(credentials.error)
+      logger.warn(credentials.error, { requestId: ctx.requestId, webhookId: ctx.webhook.id })
+      throw new WebhookDeploymentConfigurationError(credentials.error)
     }
 
     const notificationUrl = getNotificationUrl(ctx.webhook)
@@ -177,7 +178,8 @@ export const jotformHandler: WebhookProviderHandler = {
          already holds is not a no-op — it would leave the form delivering every submission
          twice. Redeploys re-run this, so the existing list decides whether to post. */
       if (await listWebhookIdForUrl(credentials, notificationUrl)) {
-        logger.info(`[${ctx.requestId}] Jotform webhook was already registered`, {
+        logger.info('Jotform webhook was already registered', {
+          requestId: ctx.requestId,
           webhookId: ctx.webhook.id,
           formId: credentials.formId,
         })
@@ -205,14 +207,16 @@ export const jotformHandler: WebhookProviderHandler = {
         )
       }
 
-      logger.info(`[${ctx.requestId}] Registered Jotform webhook`, {
+      logger.info('Registered Jotform webhook', {
+        requestId: ctx.requestId,
         webhookId: ctx.webhook.id,
         formId: credentials.formId,
       })
 
       return {}
     } catch (error) {
-      logger.error(`[${ctx.requestId}] Failed to register Jotform webhook`, {
+      logger.error('Failed to register Jotform webhook', {
+        requestId: ctx.requestId,
         webhookId: ctx.webhook.id,
         error: getErrorMessage(error),
       })
@@ -223,9 +227,9 @@ export const jotformHandler: WebhookProviderHandler = {
   async deleteSubscription(ctx: DeleteSubscriptionContext): Promise<void> {
     const credentials = readCredentials(ctx.webhook)
     if ('error' in credentials) {
-      logger.warn(
-        `[${ctx.requestId}] Missing Jotform credentials, skipping webhook cleanup for ${ctx.webhook.id}`
-      )
+      logger.warn(`Missing Jotform credentials, skipping webhook cleanup for ${ctx.webhook.id}`, {
+        requestId: ctx.requestId,
+      })
       if (ctx.strict) throw new Error(credentials.error)
       return
     }
@@ -241,8 +245,8 @@ export const jotformHandler: WebhookProviderHandler = {
         )
       ) {
         logger.info(
-          `[${ctx.requestId}] Skipping Jotform webhook deletion because an active deployment is served by the same callback`,
-          { webhookId: ctx.webhook.id }
+          'Skipping Jotform webhook deletion because an active deployment is served by the same callback',
+          { requestId: ctx.requestId, webhookId: ctx.webhook.id }
         )
         return
       }
@@ -250,9 +254,9 @@ export const jotformHandler: WebhookProviderHandler = {
       const webhookId = await listWebhookIdForUrl(credentials, notificationUrl)
 
       if (!webhookId) {
-        logger.info(
-          `[${ctx.requestId}] Jotform webhook was already absent from form ${credentials.formId}`
-        )
+        logger.info(`Jotform webhook was already absent from form ${credentials.formId}`, {
+          requestId: ctx.requestId,
+        })
         return
       }
 
@@ -265,9 +269,12 @@ export const jotformHandler: WebhookProviderHandler = {
       )
 
       await parseJotformResponse(response, 'Jotform Delete Webhook')
-      logger.info(`[${ctx.requestId}] Deleted Jotform webhook from form ${credentials.formId}`)
+      logger.info(`Deleted Jotform webhook from form ${credentials.formId}`, {
+        requestId: ctx.requestId,
+      })
     } catch (error) {
-      logger.warn(`[${ctx.requestId}] Error deleting Jotform webhook (non-fatal)`, {
+      logger.warn('Error deleting Jotform webhook (non-fatal)', {
+        requestId: ctx.requestId,
         error: getErrorMessage(error),
       })
       if (ctx.strict) throw error
