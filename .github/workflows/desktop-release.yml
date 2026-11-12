@@ -256,6 +256,7 @@ jobs:
   build:
     name: build
     needs: source
+    if: github.repository == 'simstudioai/sim' || !inputs.sign
     outputs:
       artifact_id: ${{ steps.artifacts.outputs.artifact-id }}
     runs-on: macos-26
@@ -505,7 +506,7 @@ jobs:
   publish:
     name: publish
     needs: [source, build, smoke]
-    if: inputs.publish
+    if: github.repository == 'simstudioai/sim' && inputs.publish
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
