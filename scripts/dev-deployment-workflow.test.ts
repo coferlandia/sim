@@ -7,7 +7,12 @@ const ci = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url),
 const tasks = readFileSync(new URL('../.github/workflows/trigger-dev.yml', import.meta.url), 'utf8')
 
 /** Evaluate the checked-in job condition for concrete GitHub job outcomes. */
-function eligible(job: string, branch: string, results: Record<string, string> = {}) {
+function eligible(
+  job: string,
+  branch: string,
+  results: Record<string, string> = {},
+  repository = 'simstudioai/sim'
+) {
   const body = ci.split(`\n  ${job}:\n`)[1]?.split(/^ {2}[\w-]+:/m)[0]
   const expression = body?.match(/ {4}if: >-\n((?: {6}.*\n)+)/)?.[1]
   if (!expression) throw new Error(`Missing job condition: ${job}`)
@@ -23,7 +28,7 @@ function eligible(job: string, branch: string, results: Record<string, string> =
     }).map(([name, result]) => [name, { result, outputs: { promoted: 'true' } }])
   )
   return runInNewContext(expression.replace(/needs\.([\w-]+)/g, 'needs["$1"]'), {
-    github: { event_name: 'push', ref: `refs/heads/${branch}` },
+    github: { event_name: 'push', ref: `refs/heads/${branch}`, repository },
     needs,
     cancelled: () => false,
   })
@@ -66,6 +71,12 @@ describe('dev deployment independence', () => {
     expect(eligible('trigger-upload', 'dev')).toBe(false)
     expect(eligible('trigger-promote', 'dev')).toBe(false)
     expect(eligible('promote', 'dev', { 'trigger-upload': 'skipped' })).toBe(true)
+  })
+
+  it('blocks dev image promotion in a fork', () => {
+    expect(
+      eligible('promote', 'dev', { 'trigger-upload': 'skipped' }, 'coferlandia/sim')
+    ).toBe(false)
   })
 
   it('does not roll tasks back when an older push is retried', () => {
