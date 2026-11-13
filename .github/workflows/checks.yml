@@ -592,7 +592,7 @@ jobs:
   lint:
     name: lint
     needs: changes
-    runs-on: &runner-4vcpu ${{ vars.CI_PROVIDER == 'coferlandia' && fromJSON('["self-hosted","Linux","ARM64","coferlandia-ci","docker"]') || ((vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest') }}
+    runs-on: &runner-4vcpu ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 15
 
     steps:
@@ -704,27 +704,12 @@ jobs:
       - name: Lint workflows
         env:
           ACTIONLINT_VERSION: 1.7.12
-          ACTIONLINT_SHA256_AMD64: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
-          ACTIONLINT_SHA256_ARM64: 325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6
+          ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
         run: |
-          case "$RUNNER_ARCH" in
-            X64)
-              actionlint_arch=amd64
-              actionlint_sha="$ACTIONLINT_SHA256_AMD64"
-              ;;
-            ARM64)
-              actionlint_arch=arm64
-              actionlint_sha="$ACTIONLINT_SHA256_ARM64"
-              ;;
-            *)
-              echo "::error::Unsupported runner architecture for actionlint: $RUNNER_ARCH"
-              exit 1
-              ;;
-          esac
           archive="$RUNNER_TEMP/actionlint.tar.gz"
           curl -fsSL -o "$archive" \
-            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_${actionlint_arch}.tar.gz"
-          echo "${actionlint_sha}  ${archive}" | sha256sum -c -
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum -c -
           tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
           "$RUNNER_TEMP/actionlint" -color -shellcheck= -pyflakes=
 
@@ -821,7 +806,7 @@ jobs:
     name: test (${{ matrix.shard }}/${{ needs.changes.outputs.test_app == 'true' && '2' || '1' }})
     needs: changes
     if: needs.changes.outputs.test == 'true'
-    runs-on: ${{ needs.changes.outputs.test_app == 'true' && vars.CI_PROVIDER == 'coferlandia' && fromJSON('["self-hosted","Linux","ARM64","coferlandia-ci","docker"]') || (needs.changes.outputs.test_app == 'true' && (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
+    runs-on: ${{ needs.changes.outputs.test_app == 'true' && (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
