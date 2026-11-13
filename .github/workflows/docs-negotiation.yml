@@ -77,7 +77,7 @@ jobs:
   benchmark:
     if: github.event_name == 'workflow_dispatch' && inputs.benchmark
     name: docs benchmark (${{ matrix.target }})
-    runs-on: ${{ vars.CI_PROVIDER == 'coferlandia' && fromJSON('["self-hosted","Linux","ARM64","coferlandia-ci","docker"]') || ((vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core') }}
+    runs-on: ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core' }}
     timeout-minutes: 150
     strategy:
       fail-fast: false
@@ -209,7 +209,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     name: docs build
-    runs-on: ${{ vars.CI_PROVIDER == 'coferlandia' && fromJSON('["self-hosted","Linux","ARM64","coferlandia-ci","docker"]') || ((vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core') }}
+    runs-on: ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core' }}
     timeout-minutes: 45
     env:
       DATABASE_URL: postgresql://docs_test:docs_test@127.0.0.1:1/docs_test
@@ -261,7 +261,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs_site == 'true'
     name: docs source
-    runs-on: ${{ vars.CI_PROVIDER == 'coferlandia' && fromJSON('["self-hosted","Linux","ARM64","coferlandia-ci","docker"]') || ((vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core') }}
+    runs-on: ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core' }}
     timeout-minutes: 45
     env:
       DATABASE_URL: postgresql://docs_test:docs_test@127.0.0.1:1/docs_test
@@ -308,7 +308,7 @@ jobs:
     if: needs.changes.outputs.docs == 'true'
     needs: [changes, build]
     name: docs acceptance (${{ matrix.group }})
-    runs-on: ${{ vars.CI_PROVIDER == 'coferlandia' && fromJSON('["self-hosted","Linux","ARM64","coferlandia-ci","docker"]') || ((vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core') }}
+    runs-on: ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-8vcpu-ubuntu-2404' || 'linux-x64-8-core' }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
