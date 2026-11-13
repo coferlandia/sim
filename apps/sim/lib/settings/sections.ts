@@ -56,9 +56,9 @@ export const settingsSections: Record<MothershipSettingsScope, readonly Settings
     { id: 'requests', label: 'Access requests', uiSection: 'requests' },
     {
       id: 'sim-links',
-      label: 'Sim links',
+      label: 'Links',
       userSetup:
-        'Members browse and follow links on the organization Links page. Available only where Sim links are enabled for the organization.',
+        'Members browse and follow links on the organization Links page. Available only where Links are enabled for the organization.',
     },
     {
       id: 'sso',
@@ -112,7 +112,12 @@ export const settingsSections: Record<MothershipSettingsScope, readonly Settings
       id: 'teammates',
       label: 'Teammates',
       uiSection: 'teammates',
-      cli: ['workspaces members', 'workspaces invitations create'],
+      cli: [
+        'workspaces members list',
+        'workspaces members update',
+        'workspaces members remove',
+        'workspaces invitations create',
+      ],
     },
     {
       id: 'secrets',

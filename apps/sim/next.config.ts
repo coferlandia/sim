@@ -493,6 +493,16 @@ const nextConfig: NextConfig = {
         source: '/team',
         destination: 'https://cal.com/team/sim/demo',
         permanent: false,
+      },
+      {
+        source: '/security',
+        destination: 'https://trust.sim.ai/',
+        permanent: false,
+      },
+      {
+        source: '/trust',
+        destination: 'https://trust.sim.ai/',
+        permanent: false,
       }
     )
 
@@ -643,6 +653,20 @@ const nextConfig: NextConfig = {
       }
     )
 
+    /** Readers and agents guess the product's full name; the page's slug is `microsoft-copilot`. */
+    redirects.push(
+      {
+        source: '/comparisons/microsoft-copilot-studio',
+        destination: '/comparisons/microsoft-copilot',
+        permanent: true,
+      },
+      {
+        source: '/comparisons/copilot-studio',
+        destination: '/comparisons/microsoft-copilot',
+        permanent: true,
+      }
+    )
+
     /**
      * Stray crawler/artifact URLs picked up in an external SEO audit — no
      * page ever existed at these paths, but they were indexed or linked
@@ -656,11 +680,6 @@ const nextConfig: NextConfig = {
       },
       {
         source: '/&',
-        destination: '/',
-        permanent: true,
-      },
-      {
-        source: '/Sim',
         destination: '/',
         permanent: true,
       },

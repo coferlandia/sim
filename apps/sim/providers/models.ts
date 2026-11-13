@@ -36,6 +36,7 @@ import {
   ZaiIcon,
 } from '@/components/icons'
 import { NebiusIcon } from '@/components/icons/nebius'
+import { ThinkingMachinesIcon } from '@/components/icons/thinking-machines'
 import { LARGE_VALUE_THRESHOLD_BYTES } from '@/lib/execution/payloads/large-value-ref'
 import type { ModelPricing, ProviderId } from '@/providers/types'
 
@@ -438,6 +439,42 @@ export const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
         pricing: { input: 0.15, output: 0.5, updatedAt: '2026-10-07' },
         capabilities: { toolUsageControl: true, nativeStructuredOutputs: false },
         contextWindow: 1024000,
+      },
+    ],
+  },
+  thinkingmachines: {
+    id: 'thinkingmachines',
+    name: 'Thinking Machines',
+    description: 'Inkling models via Tinker serverless inference',
+    defaultModel: 'thinkingmachines/inkling',
+    modelPatterns: [/^thinkingmachines\//],
+    icon: ThinkingMachinesIcon,
+    color: '#111111',
+    capabilities: {
+      temperature: { min: 0, max: 1 },
+      toolUsageControl: true,
+      forcedToolUse: false,
+    },
+    models: [
+      {
+        id: 'thinkingmachines/inkling',
+        pricing: { input: 1.0, cachedInput: 0.17, output: 4.05, updatedAt: '2026-11-05' },
+        capabilities: {},
+        contextWindow: 262144,
+        releaseDate: '2026-07-16',
+      },
+      {
+        id: 'thinkingmachines/inkling-2-small',
+        pricing: { input: 0.3, cachedInput: 0.03, output: 1.0, updatedAt: '2026-11-05' },
+        capabilities: {},
+        contextWindow: 262144,
+      },
+      {
+        id: 'thinkingmachines/inkling-small',
+        pricing: { input: 0.3, cachedInput: 0.06, output: 1.2, updatedAt: '2026-11-05' },
+        capabilities: {},
+        contextWindow: 262144,
+        releaseDate: '2026-07-31',
       },
     ],
   },
@@ -1269,6 +1306,29 @@ export const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     },
     models: [
       {
+        id: 'claude-fable-5-2',
+        pricing: {
+          input: 8.0,
+          cachedInput: 0.2,
+          output: 40.0,
+          updatedAt: '2026-11-09',
+        },
+        capabilities: {
+          forcedToolUse: false,
+          nativeStructuredOutputs: true,
+          maxOutputTokens: 128000,
+          promptCaching: { minimumCacheableTokens: 512 },
+          thinking: {
+            levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+            default: 'high',
+            streamed: 'summary',
+          },
+        },
+        contextWindow: 1000000,
+        releaseDate: '2026-11-09',
+        featured: true,
+      },
+      {
         id: 'claude-fable-5-1',
         pricing: {
           input: 10.0,
@@ -1289,7 +1349,7 @@ export const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
         },
         contextWindow: 1000000,
         releaseDate: '2026-09-01',
-        featured: true,
+        sunset: { status: 'legacy' },
       },
       {
         id: 'claude-fable-5',
@@ -3911,7 +3971,7 @@ export const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
     id: 'nvidia',
     name: 'NVIDIA NIM',
     description: "NVIDIA's Nemotron models via NIM's OpenAI-compatible API",
-    defaultModel: 'nvidia/nemotron-3-super-120b-a12b',
+    defaultModel: 'nvidia/nemotron-3-ultra-550b-a55b',
     modelPatterns: [/^nvidia\//],
     icon: NvidiaIcon,
     color: '#77B900',
@@ -4009,7 +4069,7 @@ export const PROVIDER_DEFINITIONS: Record<string, ProviderDefinition> = {
         },
         contextWindow: 1048576,
         releaseDate: '2026-03-11',
-        recommended: true,
+        sunset: { status: 'deprecated' },
       },
       {
         id: 'nvidia/nemotron-3-ultra-550b-a55b',

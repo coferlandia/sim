@@ -40,7 +40,7 @@ jobs:
     # Network-bound on the embeddings API: ~9% CPU and ~3% peak memory on 8 vCPU.
     runs-on: ${{ (vars.CI_PROVIDER == '' || vars.CI_PROVIDER == 'blacksmith') && 'blacksmith-2vcpu-ubuntu-2404' || 'ubuntu-latest' }}
     timeout-minutes: 30
-    if: github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish
+    if: github.repository == 'simstudioai/sim' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.publish
     concurrency:
       group: docs-search-index-production
       cancel-in-progress: false
@@ -79,7 +79,7 @@ jobs:
       # Database IP restrictions admit the tailnet's app connector; see migrate.yml.
       - name: Join the tailnet
         if: vars.CI_DB_TAILNET == 'true'
-        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        uses: tailscale/github-action@064b10558093f38325e838ddea35486bdc6b1d5c # v4.4.0
         with:
           oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           audience: ${{ secrets.TS_AUDIENCE }}

@@ -37,21 +37,32 @@ import {
   deletePersonalEnvCredentialForUser,
   deleteWorkspaceEnvCredentials,
 } from '@/lib/credentials/environment'
+import { GOOGLE_WORKLOAD_IDENTITY_SECRET_TYPE } from '@/lib/credentials/google-workload-identity'
 import { OciCredentialVerificationError } from '@/lib/credentials/oci-api-key-service-account.server'
-import type {
-  AtlassianProduct,
-  ServiceAccountFieldId,
+import { keylessFailure } from '@/lib/credentials/orchestration/credential-create'
+import {
+  type AtlassianProduct,
+  offersClientCredentialsMode,
+  type ServiceAccountFieldId,
 } from '@/lib/credentials/service-account-fields'
 import {
   ServiceAccountSecretError,
   verifyAndBuildServiceAccountSecret,
 } from '@/lib/credentials/service-account-secret'
+import { SNOWFLAKE_SERVICE_ACCOUNT_PROVIDER_ID } from '@/lib/credentials/token-service-accounts/descriptors'
 import { TokenServiceAccountValidationError } from '@/lib/credentials/token-service-accounts/errors'
+import {
+  assertReconnectedSubjectUnclaimed,
+  KeylessCredentialRefusedError,
+} from '@/lib/credentials/workload-identity/subject'
 import { invalidateEffectiveDecryptedEnvCache } from '@/lib/environment/utils'
 import { findSlackSearchInstallation } from '@/lib/knowledge/application/slack-search/repository'
 import {
   ATLASSIAN_SERVICE_ACCOUNT_PROVIDER_ID,
+  AWS_SERVICE_ACCOUNT_PROVIDER_ID,
+  DATABRICKS_SERVICE_ACCOUNT_PROVIDER_ID,
   GOOGLE_SERVICE_ACCOUNT_PROVIDER_ID,
+  MICROSOFT_APP_SERVICE_ACCOUNT_PROVIDER_ID,
   SLACK_CUSTOM_BOT_PROVIDER_ID,
   SLACK_CUSTOM_BOT_SECRET_TYPE,
 } from '@/lib/oauth/types'
@@ -82,6 +93,7 @@ const ROTATABLE_SECRET_FIELDS: readonly ServiceAccountFieldId[] = [
   'botToken',
   'apiToken',
   'domain',
+  'providerWorkspaceId',
   'atlassianProduct',
   'clientId',
   'clientSecret',
@@ -168,6 +180,12 @@ function deriveStoredDisplayName(blob: Record<string, unknown> | null): string |
   if (blob.type === GOOGLE_SERVICE_ACCOUNT_KEY_TYPE && typeof blob.client_email === 'string') {
     return blob.client_email || undefined
   }
+  if (blob.type === GOOGLE_WORKLOAD_IDENTITY_SECRET_TYPE) {
+    const config = blob.config as { serviceAccountEmail?: unknown } | undefined
+    return typeof config?.serviceAccountEmail === 'string'
+      ? config.serviceAccountEmail || undefined
+      : undefined
+  }
   return undefined
 }
 
@@ -200,6 +218,7 @@ export interface PerformUpdateCredentialParams extends CredentialActorParams {
   /** Atlassian service-account secret rotation (reconnect). */
   apiToken?: string
   domain?: string
+  providerWorkspaceId?: string
   atlassianProduct?: AtlassianProduct
   /** Client-credential service-account secret rotation (reconnect). */
   clientId?: string
@@ -224,6 +243,8 @@ export interface PerformCredentialResult {
   errorCode?: CredentialOrchestrationErrorCode
   /** Provider-specific code (e.g. Atlassian `invalid_credentials`) for client message mapping. */
   providerErrorCode?: string
+  /** A refused keyless credential, carried unchanged so callers rethrow it with its detail code. */
+  keylessRefusal?: KeylessCredentialRefusedError
   workspaceId?: string
   updatedFields?: string[]
   previousDisplayName?: string
@@ -233,7 +254,11 @@ export interface PerformCredentialResult {
 export type UpdateCredentialRecordParams = Omit<
   PerformUpdateCredentialParams,
   'userId' | 'actorName' | 'actorEmail' | 'allowedTypes' | 'reason' | 'request'
-> & { credential: CredentialRow }
+> & {
+  credential: CredentialRow
+  /** The person saving the change; binds owner-scoped secrets such as a keyless subject. */
+  actorUserId: string
+}
 
 /** Updates one already-authorized credential without surface authorization or audit. */
 export async function updateCredentialRecord(
@@ -304,6 +329,7 @@ export async function updateCredentialRecord(
 
     let rotatedSlackBotUserId: string | undefined
     let rotatedAuditMetadata: Record<string, string> | undefined
+    let rotatedKeylessSecret: string | undefined
     if (hasRotationSecret) {
       const providerId = params.credential.providerId ?? ''
 
@@ -327,11 +353,26 @@ export async function updateCredentialRecord(
       const isMultiGrantProvider = Boolean(
         getClientCredentialAccountDescriptor(providerId)?.defaultAuthMethod
       )
-      const needsStoredAuthMethod = params.authMethod === undefined && isMultiGrantProvider
+      // A token provider that also offers client credentials keeps the stored mode when the
+      // reconnect sends client credentials without restating it; sending a token selects the
+      // token mode, exactly as before the client-credentials mode existed.
+      const needsStoredAuthMethod =
+        params.authMethod === undefined &&
+        (isMultiGrantProvider ||
+          (offersClientCredentialsMode(providerId) && params.apiToken === undefined))
       const needsStoredAtlassianProduct =
         providerId === ATLASSIAN_SERVICE_ACCOUNT_PROVIDER_ID &&
         params.atlassianProduct === undefined
       const needsStoredUsername = params.username === undefined && isMultiGrantProvider
+      // A keyless AWS role, Databricks principal, Microsoft app, Google service account, or
+      // Snowflake service user keeps its trusted subject across reconnects.
+      const needsStoredBoundSubject =
+        providerId === AWS_SERVICE_ACCOUNT_PROVIDER_ID ||
+        providerId === GOOGLE_SERVICE_ACCOUNT_PROVIDER_ID ||
+        providerId === DATABRICKS_SERVICE_ACCOUNT_PROVIDER_ID ||
+        providerId === MICROSOFT_APP_SERVICE_ACCOUNT_PROVIDER_ID ||
+        (providerId === SNOWFLAKE_SERVICE_ACCOUNT_PROVIDER_ID &&
+          params.serviceAccountJson !== undefined)
 
       // Rotating to a key that belongs to a different principal makes an
       // identity-derived label (a Google `client_email`, a Slack team name)
@@ -349,7 +390,8 @@ export async function updateCredentialRecord(
         needsStoredAuthMethod ||
         needsStoredUsername ||
         needsStoredIdentity ||
-        needsStoredAtlassianProduct
+        needsStoredAtlassianProduct ||
+        needsStoredBoundSubject
           ? await readStoredSecretBlob(params.credential.id)
           : null
 
@@ -404,6 +446,7 @@ export async function updateCredentialRecord(
           botToken: params.botToken,
           apiToken: params.apiToken,
           domain: params.domain,
+          providerWorkspaceId: params.providerWorkspaceId,
           atlassianProduct: needsStoredAtlassianProduct
             ? readStoredField(storedBlob, 'atlassianProduct') === 'confluence'
               ? 'confluence'
@@ -428,10 +471,18 @@ export async function updateCredentialRecord(
           fingerprint: params.fingerprint,
           privateKeyPassphrase: params.privateKeyPassphrase,
           region: params.region,
+          owner: {
+            ...(params.credential.organizationId
+              ? { organizationId: params.credential.organizationId }
+              : { workspaceId: params.credential.workspaceId ?? undefined }),
+            actorUserId: params.actorUserId,
+            storedSecret: storedBlob,
+          },
         })
         updates.encryptedServiceAccountKey = secret.encryptedServiceAccountKey
         rotatedSlackBotUserId = secret.botUserId
         rotatedAuditMetadata = secret.auditMetadata
+        if (needsStoredBoundSubject) rotatedKeylessSecret = secret.encryptedServiceAccountKey
 
         if (needsStoredIdentity) {
           const previousIdentity = deriveStoredDisplayName(storedBlob)
@@ -445,6 +496,7 @@ export async function updateCredentialRecord(
           }
         }
       } catch (error) {
+        if (error instanceof KeylessCredentialRefusedError) return keylessFailure(error)
         if (error instanceof ServiceAccountSecretError) {
           return { success: false, error: error.message, errorCode: 'validation' }
         }
@@ -494,7 +546,24 @@ export async function updateCredentialRecord(
     }
 
     updates.updatedAt = new Date()
-    await db.update(credential).set(updates).where(eq(credential.id, params.credentialId))
+    if (rotatedKeylessSecret) {
+      const rotatedSecret = rotatedKeylessSecret
+      try {
+        await db.transaction(async (tx) => {
+          await assertReconnectedSubjectUnclaimed(tx, {
+            rotatedSecret,
+            scope: resourceScopeFromOwner(params.credential),
+            credentialId: params.credentialId,
+          })
+          await tx.update(credential).set(updates).where(eq(credential.id, params.credentialId))
+        })
+      } catch (error) {
+        if (error instanceof KeylessCredentialRefusedError) return keylessFailure(error)
+        throw error
+      }
+    } else {
+      await db.update(credential).set(updates).where(eq(credential.id, params.credentialId))
+    }
 
     // The flag rides the environment snapshot into every run's redaction catalog, so a flip
     // must not serve stale from the same-process snapshot cache. Cross-process readers are
@@ -568,7 +637,11 @@ export async function performUpdateCredential(
     }
   }
 
-  const result = await updateCredentialRecord({ ...params, credential: access.credential })
+  const result = await updateCredentialRecord({
+    ...params,
+    credential: access.credential,
+    actorUserId: params.userId,
+  })
   if (!result.success) return result
 
   recordAudit({

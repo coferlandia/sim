@@ -115,6 +115,7 @@ export async function resolveExecutorCredentialToken(
     workflowId,
     executionId: params.executionId,
     toolId,
+    assistantConnectedAccount: copilotExecutionContext?.requestMode === 'assistant',
     scopes: params.scopes,
     impersonateEmail: params.impersonateEmail,
     callerUserId: userId && params.enforceCredentialAccess ? userId : undefined,
@@ -132,7 +133,8 @@ export async function resolveExecutorCredentialToken(
     if (result.code === OAUTH_CREDENTIAL_REVOKED) {
       throw new CredentialRevokedError(message)
     }
-    logger.error(`[${requestId}] Credential token resolution failed`, {
+    logger.error('Credential token resolution failed', {
+      requestId,
       status: result.status,
       credentialId,
       code: result.code,

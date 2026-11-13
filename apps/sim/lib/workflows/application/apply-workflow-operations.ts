@@ -3,6 +3,8 @@ import { type Principal, resolvePrincipalAttribution } from '@sim/auth/principal
 import { db } from '@sim/db'
 import { createLogger } from '@sim/logger'
 import { toError } from '@sim/utils/errors'
+import { sortObjectKeysDeep } from '@sim/utils/object'
+import { compareStrings } from '@sim/utils/string'
 import {
   generateLoopBlocks,
   generateParallelBlocks,
@@ -12,6 +14,7 @@ import { hasWorkspaceSandboxAccess } from '@/lib/billing/core/subscription'
 import { ForbiddenOperationError, principalAuditSource } from '@/lib/core/application'
 import { getBlockVisibility } from '@/lib/core/config/block-visibility'
 import { OrchestrationError } from '@/lib/core/orchestration/types'
+import type { DbOrTx } from '@/lib/db/types'
 import { MAX_PLAN_REQUIRED } from '@/lib/execution/remote-sandbox/entitlement'
 import { resolvePermissionGroupConfig } from '@/lib/permission-groups/config-scope.server'
 import { notifyWorkflowUpdated } from '@/lib/realtime/notify'
@@ -39,6 +42,7 @@ import {
 } from '@/lib/workflows/editing/block-enablement'
 import { applyOperationsToWorkflowState } from '@/lib/workflows/editing/engine'
 import type { WorkflowLintReport } from '@/lib/workflows/editing/lint'
+import { hasWorkflowLintIssues, summarizeWorkflowLintIssues } from '@/lib/workflows/editing/lint'
 import { buildWorkflowLintReport } from '@/lib/workflows/editing/lint-report'
 import { operationsReferenceSimSandbox } from '@/lib/workflows/editing/sandbox-projection'
 import {
@@ -49,6 +53,7 @@ import {
   type ValidationError,
 } from '@/lib/workflows/editing/types'
 import { preValidateCredentialInputs } from '@/lib/workflows/editing/validation'
+import { assertNoWithheldBlockType } from '@/lib/workflows/persistence/block-access-guard'
 import { prepareWorkflowStateForPersistence } from '@/lib/workflows/persistence/prepare-state'
 import {
   assertWorkflowGraphIdsUnclaimed,
@@ -146,9 +151,17 @@ function asGraph(value: Record<string, unknown>): Pick<WorkflowState, 'blocks' |
  * graph. A null result therefore remains a hard failure rather than becoming a
  * fallback graph that a write could persist after a failed read.
  */
-async function loadStoredGraph(workflowId: string): Promise<Record<string, unknown>> {
-  const normalized = await loadWorkflowFromNormalizedTables(workflowId)
+async function loadStoredGraph(
+  workflowId: string,
+  lockedTx?: DbOrTx
+): Promise<Record<string, unknown>> {
+  const normalized = await loadWorkflowFromNormalizedTables(workflowId, lockedTx)
   if (!normalized) {
+    // The loader answers null for a failed query too. Under the row lock the
+    // workflow is known to exist, so that is the only meaning left.
+    if (lockedTx) {
+      throw new OrchestrationError('internal', `Failed to re-read workflow ${workflowId}`)
+    }
     throw new OrchestrationError('validation', `Workflow ${workflowId} has no normalized state`)
   }
   const { state, warnings } = normalizeWorkflowState({
@@ -165,21 +178,6 @@ async function loadStoredGraph(workflowId: string): Promise<Record<string, unkno
   }
   // double-cast-allowed: the edit engine takes an open record; `normalizeWorkflowState` returns the canonical interface, which has no index signature.
   return state as unknown as Record<string, unknown>
-}
-
-/**
- * How many of the engine's skips charge against the operation batch.
- *
- * The enablement slice appends to the same array, and a deferred forward
- * reference is not a refusal at all, so neither may be subtracted from the
- * operation count.
- */
-function countOperationSkips(skippedItems: readonly SkippedItem[]): number {
-  let count = 0
-  for (const item of skippedItems) {
-    if (item.operationType !== 'set_block_enabled' && !isDeferredSkippedItem(item)) count += 1
-  }
-  return count
 }
 
 /**
@@ -230,13 +228,54 @@ function applyBlockEnabledChanges(
   return { blocks: current, applied }
 }
 
+/**
+ * An order-insensitive identity for a stored graph, so two reads of the same
+ * rows compare equal even though the loader neither orders its rows nor fixes
+ * the key order of the records it builds.
+ *
+ * Only blocks and edges are compared: loops and parallels are rebuilt from the
+ * blocks on every load, with child `nodes` in row order.
+ */
+function storedGraphFingerprint(graph: Record<string, unknown>): string {
+  const { blocks, edges } = asGraph(graph)
+  const sortedEdges = [...(edges ?? [])].sort((a, b) => compareStrings(a.id, b.id))
+  return JSON.stringify(sortObjectKeysDeep({ blocks, edges: sortedEdges }))
+}
+
+interface BaseGraph {
+  graph: Record<string, unknown>
+  /** Set when the base was read from storage, so the write can prove it is still current. */
+  storedFingerprint?: string
+}
+
 async function resolveBaseGraph(
   principal: Principal,
   input: ApplyWorkflowOperationsInput,
   context: ActiveWorkflowApplicationContext
-): Promise<Record<string, unknown>> {
-  if (input.baseGraph && principal.kind === 'delegated') return input.baseGraph
-  return loadStoredGraph(context.workflowId)
+): Promise<BaseGraph> {
+  if (input.baseGraph && principal.kind === 'delegated') return { graph: input.baseGraph }
+  const graph = await loadStoredGraph(context.workflowId)
+  return { graph, storedFingerprint: storedGraphFingerprint(graph) }
+}
+
+/**
+ * Refuses the write when the stored graph is no longer the one the batch was
+ * applied to. Runs under the workflow row lock, so a concurrent edit that
+ * committed after the base read surfaces as a conflict instead of being
+ * silently overwritten by a graph that never saw it.
+ */
+async function assertStoredGraphUnchanged(
+  workflowId: string,
+  storedFingerprint: string,
+  tx: DbOrTx
+): Promise<void> {
+  const current = await loadStoredGraph(workflowId, tx)
+  if (storedGraphFingerprint(current) !== storedFingerprint) {
+    throw new OrchestrationError(
+      'conflict',
+      'The workflow changed while these operations were being applied. Re-read it and retry.'
+    )
+  }
 }
 
 /**
@@ -247,6 +286,8 @@ async function resolveBaseGraph(
  * skipped items, and exactly one write of the fully-resolved graph happens at the
  * end, through the shared persistence primitive. A caller that needs all-or-nothing
  * sets `atomic`, which decides between the in-memory apply and that single write.
+ * When the batch was applied to the stored graph, that write is refused as a
+ * `conflict` if another edit committed in between, rather than overwriting it.
  *
  * Copilot's `edit_workflow` tool and `POST /api/v2/workflows/{workflowId}/operations` are
  * both adapters over this; the tool is the only caller allowed to supply
@@ -275,7 +316,11 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
       const subjectUserId = attribution.attributedUserId
 
       input.checkAborted?.()
-      const baseGraph = await resolveBaseGraph(principal, input, context)
+      const { graph: baseGraph, storedFingerprint } = await resolveBaseGraph(
+        principal,
+        input,
+        context
+      )
 
       const [permissionConfig, blockVisibility] = await Promise.all([
         resolvePermissionGroupConfig(
@@ -296,6 +341,7 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
         state: modifiedGraph,
         validationErrors,
         skippedItems,
+        declinedOperationCount,
         mintedBlockIds,
       } = await withBlockVisibility(blockVisibility, async () =>
         applyOperationsToWorkflowState(
@@ -308,12 +354,11 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
       validationErrors.push(...credentialErrors)
 
       /**
-       * Counted directly rather than as `operations - skipped`. The enablement
-       * slice pushes its own refusals into the same `skippedItems` array, so
-       * subtracting the whole array from the operation count charged enablement
-       * refusals against operations and could go negative.
+       * Taken before the enablement slice appends its own refusals to `skippedItems`,
+       * and from the engine's per-operation count: one operation can record several
+       * skips, so subtracting skips from operations could go negative.
        */
-      const appliedOperations = filteredOperations.length - countOperationSkips(skippedItems)
+      const appliedOperations = filteredOperations.length - declinedOperationCount
 
       const enablement = applyBlockEnabledChanges(
         modifiedGraph.blocks as Record<string, BlockState>,
@@ -379,6 +424,12 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
       input.checkAborted?.()
 
       /**
+       * A caller that projects the response down to its warnings still learns
+       * the findings exist; the findings themselves stay only in `lint`.
+       */
+      const lintWarnings = hasWorkflowLintIssues(lint) ? [summarizeWorkflowLintIssues(lint)] : []
+
+      /**
        * A dry run still runs the whole engine — operations are applied, refusals
        * collected, the result validated and linted — and stops at the write. An
        * atomic batch has already thrown by here if anything was refused, so a
@@ -433,12 +484,19 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
             ...validation.warnings,
             ...prepared.warnings,
             ...(Object.keys(mintedBlockIds).length > 0 ? [DRY_RUN_PREVIEW_BLOCK_IDS_WARNING] : []),
+            ...lintWarnings,
           ],
           needsRedeployment: await checkNeedsRedeployment(context.workflowId),
           dryRun: true,
         }
       }
 
+      const nextState = { blocks: graph.blocks, edges: graph.edges }
+      // The write below passes a reader, which the primitive checks only under the lock.
+      await assertNoWithheldBlockType(
+        { workspaceId: context.workspaceId, subjectUserId },
+        Object.values(nextState.blocks)
+      )
       const persisted = await replaceWorkflowNormalizedState({
         workflowId: context.workflowId,
         workspaceId: context.workspaceId,
@@ -449,7 +507,18 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
          * governed subject are the same human and cannot diverge here.
          */
         subjectUserId,
-        state: { blocks: graph.blocks, edges: graph.edges },
+        /**
+         * Applying the batch reaches credential lookups, MCP server discovery,
+         * and lint queries, so it ran outside the lock; only the staleness check
+         * runs under it.
+         */
+        state:
+          storedFingerprint === undefined
+            ? nextState
+            : async (tx) => {
+                await assertStoredGraphUnchanged(context.workflowId, storedFingerprint, tx)
+                return nextState
+              },
       })
 
       logger.info('Applied workflow operations', {
@@ -473,7 +542,7 @@ export const applyWorkflowOperations = defineAuthorizedWorkflowUseCase({
         inputValidationErrors: validationErrors,
         mintedBlockIds,
         lint,
-        warnings: [...validation.warnings, ...persisted.warnings],
+        warnings: [...validation.warnings, ...persisted.warnings, ...lintWarnings],
         needsRedeployment: await checkNeedsRedeployment(context.workflowId),
         dryRun: false,
       }

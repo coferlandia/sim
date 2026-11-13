@@ -1446,6 +1446,9 @@ export const simTriggerState = pgTable(
   })
 )
 
+/** What an API key may do: `read` keys are refused every operation that changes state. */
+export const apiKeyAccessEnum = pgEnum('api_key_access', ['read', 'write'])
+
 export const apiKey = pgTable(
   'api_key',
   {
@@ -1460,6 +1463,7 @@ export const apiKey = pgTable(
     key: text('key').notNull().unique(),
     keyHash: text('key_hash'),
     type: text('type').notNull().default('personal'),
+    access: apiKeyAccessEnum('access').notNull().default('write'),
     lastUsed: timestamp('last_used'),
     createdAt: timestamp('created_at').notNull().defaultNow(),
     updatedAt: timestamp('updated_at').notNull().defaultNow(),
@@ -1927,6 +1931,68 @@ export const organization = pgTable('organization', {
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 })
 
+export const awsMarketplaceLicenseStatusEnum = pgEnum('aws_marketplace_license_status', [
+  'pending',
+  'active',
+  'inactive',
+])
+
+/**
+ * An AWS Marketplace SaaS contract license, one row per license ARN: AWS grants a new license with
+ * every agreement, so one account can hold several, and the account ID names the buyer but not the
+ * license. `status` is the newest Entitlement Service read, never a contract amount; `pending`
+ * means AWS has returned no entitlement yet, which `inactive` (lapsed or deprovisioned) is not.
+ * While a buyer's setup is open, their browser holds a one-time claim whose hash and expiry live
+ * here; a verification recording `inactive` clears it.
+ */
+export const awsMarketplaceLicense = pgTable(
+  'aws_marketplace_license',
+  {
+    id: text('id').primaryKey(),
+    licenseArn: text('license_arn').notNull(),
+    productCode: text('product_code').notNull(),
+    customerAwsAccountId: text('customer_aws_account_id').notNull(),
+    agreementId: text('agreement_id'),
+    /** When the source of `agreement_id` was true, so a redelivered old event cannot roll it back. */
+    agreementSeenAt: timestamp('agreement_seen_at'),
+    /** The agreement that replaced this license's, from a Purchase Agreement Created event. */
+    renewedAgreementId: text('renewed_agreement_id'),
+    organizationId: text('organization_id').references(() => organization.id, {
+      onDelete: 'set null',
+    }),
+    status: awsMarketplaceLicenseStatusEnum('status').notNull().default('pending'),
+    dimension: text('dimension'),
+    quantity: integer('quantity'),
+    expiresAt: timestamp('expires_at'),
+    lastVerifiedAt: timestamp('last_verified_at').notNull(),
+    /** Every verification attempt, failed ones too, so a failing license cannot starve the rest. */
+    lastVerificationAttemptAt: timestamp('last_verification_attempt_at').notNull(),
+    /** AWS says not to activate a subscription until this event has arrived, so staff can see it. */
+    licenseEventReceivedAt: timestamp('license_event_received_at'),
+    claimTokenHash: text('claim_token_hash'),
+    claimExpiresAt: timestamp('claim_expires_at'),
+    linkedByUserId: text('linked_by_user_id').references(() => user.id, { onDelete: 'set null' }),
+    /** Whom to contact about provisioning, as the buyer entered it during setup. */
+    contactEmail: text('contact_email'),
+    companyName: text('company_name'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+    updatedAt: timestamp('updated_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('aws_marketplace_license_arn_unique').on(table.licenseArn),
+    uniqueIndex('aws_marketplace_license_claim_token_hash_unique').on(table.claimTokenHash),
+    index('aws_marketplace_license_agreement_id_idx').on(table.agreementId),
+    index('aws_marketplace_license_renewed_agreement_id_idx').on(table.renewedAgreementId),
+    index('aws_marketplace_license_account_product_idx').on(
+      table.customerAwsAccountId,
+      table.productCode
+    ),
+    index('aws_marketplace_license_last_attempt_idx').on(table.lastVerificationAttemptAt),
+    index('aws_marketplace_license_organization_id_idx').on(table.organizationId),
+    index('aws_marketplace_license_linked_by_user_id_idx').on(table.linkedByUserId),
+  ]
+)
+
 /** Private navigation snapshots, scoped to the person and organization that recorded them. */
 export const organizationSearchHistory = pgTable(
   'organization_search_history',
@@ -2007,6 +2073,119 @@ export const memberProfile = pgTable(
     index('member_profile_updated_by_idx').on(table.updatedBy),
     check('member_profile_not_own_manager', sql`${table.managerMemberId} <> ${table.memberId}`),
   ]
+)
+
+/** The single authoritative People source and its fenced synchronization lease for one organization. */
+export const peopleDirectorySync = pgTable(
+  'people_directory_sync',
+  {
+    organizationId: text('organization_id')
+      .primaryKey()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    source: text('source').$type<'okta' | 'entra' | 'scim'>().notNull(),
+    sourceTarget: text('source_target').notNull(),
+    clientId: text('client_id'),
+    encryptedCredential: text('encrypted_credential'),
+    configuredBy: text('configured_by').references(() => user.id, { onDelete: 'set null' }),
+    leaseToken: text('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at'),
+    runId: text('run_id'),
+    runStartedAt: timestamp('run_started_at'),
+    phase: text('phase').$type<'users' | 'relationships' | 'publish'>(),
+    cursor: text('cursor'),
+    usersRead: integer('users_read').notNull().default(0),
+    retryCount: integer('retry_count').notNull().default(0),
+    nextSyncAt: timestamp('next_sync_at').notNull().defaultNow(),
+    lastAttemptAt: timestamp('last_attempt_at'),
+    lastSuccessAt: timestamp('last_success_at'),
+    lastFailedAt: timestamp('last_failed_at'),
+    lastError: text('last_error'),
+  },
+  (table) => [index('people_directory_sync_due_idx').on(table.nextSyncAt)]
+)
+
+/** Coalesces provisioning changes independently of the worker's long-held publication lock. */
+export const peopleDirectoryScimChange = pgTable(
+  'people_directory_scim_change',
+  {
+    organizationId: text('organization_id')
+      .primaryKey()
+      .references(() => organization.id, { onDelete: 'cascade' }),
+    changedAt: timestamp('changed_at').notNull().defaultNow(),
+  },
+  (table) => [
+    index('people_directory_scim_change_due_idx').on(table.changedAt, table.organizationId),
+  ]
+)
+
+/** Source identities live independently of accounts, memberships, seats, and access grants. */
+export const peopleDirectoryEntry = pgTable(
+  'people_directory_entry',
+  {
+    id: text('id').primaryKey(),
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => peopleDirectorySync.organizationId, { onDelete: 'cascade' }),
+    source: text('source').$type<'okta' | 'entra' | 'scim'>().notNull(),
+    externalId: text('external_id').notNull(),
+    email: text('email').notNull(),
+    name: text('name').notNull(),
+    title: text('title'),
+    department: text('department'),
+    location: text('location'),
+    managerExternalId: text('manager_external_id'),
+    createdAt: timestamp('created_at').notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex('people_directory_entry_source_id_idx').on(table.organizationId, table.externalId),
+    index('people_directory_entry_email_idx').on(table.organizationId, table.email),
+    index('people_directory_entry_manager_idx').on(table.organizationId, table.managerExternalId),
+  ]
+)
+
+/** A private working generation. Only a complete generation may replace the public People entries. */
+export const peopleDirectoryStage = pgTable(
+  'people_directory_stage',
+  {
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => peopleDirectorySync.organizationId, { onDelete: 'cascade' }),
+    runId: text('run_id').notNull(),
+    externalId: text('external_id').notNull(),
+    proposedId: text('proposed_id').notNull(),
+    email: text('email').notNull(),
+    name: text('name').notNull(),
+    title: text('title'),
+    department: text('department'),
+    location: text('location'),
+    managerExternalId: text('manager_external_id'),
+    reportsCursor: text('reports_cursor'),
+    reportsComplete: boolean('reports_complete').notNull().default(false),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.runId, table.externalId] }),
+    uniqueIndex('people_directory_stage_email_idx').on(
+      table.organizationId,
+      table.runId,
+      table.email
+    ),
+    index('people_directory_stage_pending_idx')
+      .on(table.organizationId, table.runId, table.externalId)
+      .where(sql`NOT ${table.reportsComplete}`),
+  ]
+)
+
+/** Stores hashes of processed user-list and direct-report cursors to detect replays. */
+export const peopleDirectoryPage = pgTable(
+  'people_directory_page',
+  {
+    organizationId: text('organization_id')
+      .notNull()
+      .references(() => peopleDirectorySync.organizationId, { onDelete: 'cascade' }),
+    runId: text('run_id').notNull(),
+    pageHash: text('page_hash').notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.organizationId, table.runId, table.pageHash] })]
 )
 
 /**
@@ -6233,12 +6412,19 @@ export const managedOauthCredentialStatusEnum = pgEnum('managed_oauth_credential
   'revoked',
 ])
 
+/** A site one grant reaches, recorded for display only; access is always rechecked live. */
+export interface ManagedOAuthSite {
+  name: string
+  url: string
+}
+
 export interface ManagedOAuthProviderMetadata {
   email: string
   displayName?: string
   avatarUrl?: string
   username?: string
   tenantDisplayName?: string
+  sites?: ManagedOAuthSite[]
 }
 
 export interface ManagedMcpToolSnapshot {
@@ -6335,11 +6521,23 @@ export const credential = pgTable(
       table.credentialGroupEnrollmentId
     ),
     mcpServerIdx: index('credential_mcp_server_idx').on(table.mcpServerId),
-    credentialGroupOptionUnique: uniqueIndex('credential_group_option_unique')
-      .on(table.credentialGroupEnrollmentId, table.credentialGroupOptionId)
+    credentialGroupOptionIdentityUnique: uniqueIndex('credential_group_option_identity_unique')
+      .on(
+        table.credentialGroupEnrollmentId,
+        table.credentialGroupOptionId,
+        table.providerSubjectId,
+        sql`coalesce(${table.providerTenantId}, '')`
+      )
       .where(sql`${table.type} = 'managed_oauth'`),
-    managedMcpEnrollmentServerUnique: uniqueIndex('credential_managed_mcp_enrollment_server_unique')
-      .on(table.credentialGroupEnrollmentId, table.mcpServerId)
+    managedMcpEnrollmentServerIdentityUnique: uniqueIndex(
+      'credential_managed_mcp_enrollment_server_identity_unique'
+    )
+      .on(
+        table.credentialGroupEnrollmentId,
+        table.mcpServerId,
+        sql`coalesce(${table.providerSubjectId}, '')`,
+        sql`coalesce(${table.providerTenantId}, '')`
+      )
       .where(sql`${table.type} = 'managed_mcp'`),
     workspaceAccountUnique: uniqueIndex('credential_workspace_account_unique')
       .on(table.workspaceId, table.accountId)
@@ -6422,8 +6620,6 @@ export const credential = pgTable(
         ))
         AND granted_at IS NOT NULL
         AND managed_oauth_scope_version IS NULL
-        AND provider_subject_id IS NULL
-        AND provider_tenant_id IS NULL
         AND granted_scopes IS NULL
         AND provider_metadata IS NULL
         AND created_by IS NULL
